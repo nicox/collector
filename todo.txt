@@ -1,0 +1,20 @@
+Next steps to complete the MVP:
+Implement NetBox API integration – push Device + Interfaces to NetBox
+
+Add vendor detection – use SysObjectID to identify Sophos/Cisco/HPE/etc.
+
+Handle configuration – read targets from YAML config file + credentials
+
+Docker Compose – wrap collector + optional NetBox instance together
+
+Duplex/port information – add more interface attributes (if-mib extended)
+
+Which would you like to tackle first?
+
+A) Finish NetBox API client (create devices/interfaces in NetBox)
+
+B) Add YAML config file support (to avoid CLI flags)
+
+C) Add vendor detection & vendor-specific MIBs (Sophos, Cisco, etc.)
+
+D) Something else?

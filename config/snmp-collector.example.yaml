@@ -1,0 +1,30 @@
+snmp:
+  auth_proto: SHA          # MD5, SHA, SHA256, SHA384, SHA512
+  auth_pass: "YOUR_AUTH_PASSWORD"
+  priv_proto: AES          # DES, AES
+  priv_pass: "YOUR_PRIV_PASSWORD"
+  timeout: 5               # seconds
+  retries: 1
+
+netbox:
+  url: "https://netbox.example.com/api"
+  token: "YOUR_NETBOX_TOKEN"
+  site: "Default"
+  dry_run: true            # set to false to actually push to NetBox
+
+devices:
+  - name: "fw-main"
+    target: "192.0.2.1"
+    port: 161
+    user: "snmpv3user"
+  
+  - name: "switch-core"
+    target: "192.0.2.2"
+    port: 161
+    user: "snmpv3user"
+  
+  - name: "switch-access"
+    target: "192.0.2.3"
+    port: 161
+    user: "snmpv3user"
+
