@@ -285,93 +285,86 @@ func (n *NetBoxClient) GetOrCreateDeviceType(manufacturer, model string) (float6
 	return n.CreateDefaultDeviceType()
 }
 
-// PushARPDevices creates devices from ARP entries discovered on source device
-func (n *NetBoxClient) PushARPDevices(sourceSysName string, sourceSiteID float64, arpEntries []snmpclient.ARPEntry) (int, error) {
-	if len(arpEntries) == 0 {
-		return 0, nil
-	}
+// PushARPEntries creates IP addresses in NetBox from ARP entries discovered on source device
+func (n *NetBoxClient) PushARPEntries(sourceSysName string, sourceSiteID float64, arpEntries []snmpclient.ARPEntry) (int, error) {
+    if len(arpEntries) == 0 {
+        return 0, nil
+    }
 
-	fmt.Printf("→ Creating/updating devices from ARP entries (%d found):\n", len(arpEntries))
+    fmt.Printf("→ Creating/updating IP addresses from ARP entries (%d found):\n", len(arpEntries))
 
-	createdCount := 0
-	for _, entry := range arpEntries {
-		// Use MAC address as unique identifier
-		mac := entry.MACAddr
+    createdCount := 0
+    for _, entry := range arpEntries {
+        ipAddr := entry.IPAddr
+        mac := entry.MACAddr
 
-		// Check if device with this MAC already exists
-		encodedMAC := url.QueryEscape(mac)
-		resp, _, _ := n.doRequest("GET", fmt.Sprintf("/dcim/devices/?asset_tag=%s", encodedMAC), nil)
+        // Check if IP address already exists
+        encodedIP := url.QueryEscape(ipAddr)
+        resp, _, _ := n.doRequest("GET", fmt.Sprintf("/ipam/ip-addresses/?address=%s", encodedIP), nil)
 
-		if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
-			device, ok := results[0].(map[string]interface{})
-			if ok {
-				if id, ok := device["id"].(float64); ok {
-					// Device exists; update comments with discovery info only
-					fmt.Printf("  ✓ Device %s exists (ID=%d), updating notes\n", mac, int(id))
-					n.UpdateDeviceNotes(id, sourceSysName, entry.IPAddr, entry.Hostname)
-					continue
-				}
-			}
-		}
+        if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+            ipObject, ok := results[0].(map[string]interface{})
+            if ok {
+                if id, ok := ipObject["id"].(float64); ok {
+                    // IP exists; update description with discovery info
+                    fmt.Printf("  ✓ IP %s exists (ID=%d), updating description\n", ipAddr, int(id))
+                    
+                    description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
+                    if entry.Hostname != "" {
+                        description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
+                    }
+                    
+                    updatePayload := map[string]interface{}{
+                        "description": description,
+                    }
+                    n.doRequest("PATCH", fmt.Sprintf("/ipam/ip-addresses/%d/", int(id)), updatePayload)
+                    continue
+                }
+            }
+        }
 
-		// New device: use MAC as name, and hostname/IP as description
-		deviceName := mac
-		deviceDescription := entry.IPAddr
-		if entry.Hostname != "" {
-			deviceDescription = entry.Hostname + " (" + entry.IPAddr + ")"
-		}
+        // Create new IP address entry
+        description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
+        if entry.Hostname != "" {
+            description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
+        }
 
-		// Get or create role "Endpoint"
-		roleID, err := n.GetOrCreateDeviceRole("Endpoint")
-		if err != nil {
-			fmt.Printf("  ⚠ Failed to get role for %s: %v\n", mac, err)
-			continue
-		}
+        payload := map[string]interface{}{
+            "address":     ipAddr + "/32", // NetBox requires CIDR notation
+            "status":      "active",
+            "description": description,
+            "dns_name":    entry.Hostname,
+        }
 
-		// Get or create device type "Unknown"
-		dtID, err := n.CreateDefaultDeviceType()
-		if err != nil {
-			fmt.Printf("  ⚠ Failed to get device type for %s: %v\n", mac, err)
-			continue
-		}
+        // Add custom field for MAC address if available
+        if mac != "" {
+            payload["custom_fields"] = map[string]interface{}{
+                "mac_address": mac,
+            }
+        }
 
-		// Create device (asset_tag is MAC for future lookups)
-		payload := map[string]interface{}{
-			"name":        deviceName,
-			"site":        int(sourceSiteID),
-			"device_type": int(dtID),
-			"role":        int(roleID),
-			"comments":    fmt.Sprintf("Discovered from ARP on %s\n%s", sourceSysName, deviceDescription),
-			"asset_tag":   mac,
-		}
+        resp, status, err := n.doRequest("POST", "/ipam/ip-addresses/", payload)
+        if err != nil {
+            fmt.Printf("  ❌ Failed to create IP %s: %v\n", ipAddr, err)
+            continue
+        }
 
-		resp, status, err := n.doRequest("POST", "/dcim/devices/", payload)
-		if err != nil {
-			fmt.Printf("  ❌ Failed to create device %s: %v\n", mac, err)
-			continue
-		}
+        if status >= 400 {
+            fmt.Printf("  ❌ API error %d creating IP %s\n", status, ipAddr)
+            continue
+        }
 
-		if status >= 400 {
-			fmt.Printf("  ❌ API error %d creating device %s\n", status, mac)
-			continue
-		}
+        ipID, ok := resp["id"].(float64)
+        if !ok {
+            continue
+        }
 
-		deviceID, ok := resp["id"].(float64)
-		if !ok {
-			continue
-		}
+        fmt.Printf("  ✓ Created IP %s (ID=%d)\n", ipAddr, int(ipID))
+        createdCount++
+    }
 
-		fmt.Printf("  ✓ Created device %s (ID=%d)\n", mac, int(deviceID))
-		createdCount++
-
-		// Create interface with MAC address
-		if err := n.createInterfaceForARPDevice(deviceID, mac); err != nil {
-			fmt.Printf("  ⚠ Failed to create interface for %s: %v\n", mac, err)
-		}
-	}
-
-	fmt.Printf("  Created %d/%d ARP devices\n", createdCount, len(arpEntries))
-	return createdCount, nil
+    fmt.Printf("  Created %d/%d IP addresses from ARP entries\n", createdCount, len(arpEntries))
+    return createdCount, nil
 }
 
 // createInterfaceForARPDevice creates an interface with the MAC address as name

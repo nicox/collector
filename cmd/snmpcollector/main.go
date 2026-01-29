@@ -95,7 +95,7 @@ func main() {
 		}
 
 
-		// Get site ID for ARP device creation
+		// Get site ID for ARP device v creation
 		var siteID float64
 		if nb != nil {
 			// Need to add method to get site ID
@@ -129,7 +129,7 @@ func main() {
 		}
 				// Push ARP devices to NetBox if enabled
 		if nb != nil && !cfg.NetBox.DryRun && len(arp) > 0 {
-			_, err := nb.PushARPDevices(deviceInfo.SysName, siteID, arp)
+			_, err := nb.PushARPEntries(deviceInfo.SysName, siteID, arp)
 			if err != nil {
 				log.Printf("⚠ Failed to push ARP devices: %v\n", err)
 			}
