@@ -1,30 +1,53 @@
+# NetBox Configuration
+netbox:
+  url: "http://netbox:8000"
+  token: "your-netbox-api-token-here"
+  site: "Main Site"
+  dry_run: false
+  insecure: false  # Set to true for self-signed certificates
+
+# SNMP Configuration
 snmp:
-  auth_proto: SHA          # MD5, SHA, SHA256, SHA384, SHA512
-  auth_pass: "YOUR_AUTH_PASSWORD"
-  priv_proto: AES          # DES, AES
-  priv_pass: "YOUR_PRIV_PASSWORD"
-  timeout: 5               # seconds
+  auth_proto: "SHA"      # SHA or MD5
+  auth_pass: "authpass"
+  priv_proto: "AES"      # AES or DES
+  priv_pass: "privpass"
+  timeout: 5             # seconds
   retries: 1
 
-netbox:
-  url: "https://netbox.example.com/api"
-  token: "YOUR_NETBOX_TOKEN"
-  site: "Default"
-  dry_run: true            # set to false to actually push to NetBox
-
+# Manual Device List (legacy mode)
 devices:
-  - name: "fw-main"
-    target: "192.0.2.1"
+  - name: "firewall-01"
+    target: "10.0.0.1"
     port: 161
     user: "snmpv3user"
   
-  - name: "switch-core"
-    target: "192.0.2.2"
-    port: 161
-    user: "snmpv3user"
-  
-  - name: "switch-access"
-    target: "192.0.2.3"
+  - name: "firewall-02"
+    target: "10.0.0.2"
     port: 161
     user: "snmpv3user"
 
+# Automatic Network Discovery (optional - disabled by default)
+discovery:
+  enabled: false
+  interval: 1h           # How often to scan networks
+  networks:
+    - "10.0.0.0/24"
+    - "192.168.1.0/24"
+  concurrent: 10         # Number of concurrent scans
+
+# Device Type Library Integration
+device_types:
+  enabled: true
+  repository_path: "/app/devicetype-library"
+  auto_update: true
+  update_interval: 24h
+
+# Custom Fields Management
+custom_fields:
+  auto_create: true      # Automatically create custom fields if missing
+
+# Logging Configuration
+logging:
+  level: "info"          # debug, info, warn, error
+  format: "text"         # text or json
