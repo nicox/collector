@@ -1,17 +1,16 @@
 package netbox
 
 import (
-	"log"
-	"strconv"
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"snmp-collector/internal/snmpclient"
 	"strings"
-	"net/url"
 )
 
 type NetBoxClient struct {
@@ -22,7 +21,7 @@ type NetBoxClient struct {
 
 func New(url, token string, insecure bool) (*NetBoxClient, error) {
 	url = strings.TrimSuffix(url, "/")
-	
+
 	// Create HTTP client with optional insecure TLS
 	transport := &http.Transport{}
 	if insecure {
@@ -53,7 +52,7 @@ func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 			role, ok := results[0].(map[string]interface{})
 			if ok {
 				if id, ok := role["id"].(float64); ok {
-					fmt.Printf("  ✓ Found role: %s (ID=%d)\n", roleName, int(id))
+					fmt.Printf(" ✓ Found role: %s (ID=%d)\n", roleName, int(id))
 					return id, nil
 				}
 			}
@@ -61,7 +60,7 @@ func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 	}
 
 	// Create role
-	fmt.Printf("  → Creating role: %s\n", roleName)
+	fmt.Printf(" → Creating role: %s\n", roleName)
 	payload := map[string]interface{}{
 		"name": roleName,
 		"slug": strings.ToLower(roleName),
@@ -71,7 +70,6 @@ func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to create role: %w", err)
 	}
-
 	if status >= 400 {
 		return 0, fmt.Errorf("API error %d creating role", status)
 	}
@@ -81,7 +79,7 @@ func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 		return 0, fmt.Errorf("no ID in role response")
 	}
 
-	fmt.Printf("  ✓ Created role (ID=%d)\n", int(roleID))
+	fmt.Printf(" ✓ Created role (ID=%d)\n", int(roleID))
 	return roleID, nil
 }
 
@@ -100,6 +98,7 @@ func (n *NetBoxClient) GetOrCreateManufacturer(name string) (float64, error) {
 			mfr, ok := results[0].(map[string]interface{})
 			if ok {
 				if id, ok := mfr["id"].(float64); ok {
+					fmt.Printf(" ✓ Found manufacturer: %s (ID=%d)\n", name, int(id))
 					return id, nil
 				}
 			}
@@ -107,7 +106,7 @@ func (n *NetBoxClient) GetOrCreateManufacturer(name string) (float64, error) {
 	}
 
 	// Create manufacturer
-	fmt.Printf("  → Creating manufacturer: %s\n", name)
+	fmt.Printf(" → Creating manufacturer: %s\n", name)
 	payload := map[string]interface{}{
 		"name": name,
 		"slug": strings.ToLower(name),
@@ -117,7 +116,6 @@ func (n *NetBoxClient) GetOrCreateManufacturer(name string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to create manufacturer: %w", err)
 	}
-
 	if status >= 400 {
 		return 0, fmt.Errorf("API error %d creating manufacturer", status)
 	}
@@ -127,7 +125,7 @@ func (n *NetBoxClient) GetOrCreateManufacturer(name string) (float64, error) {
 		return 0, fmt.Errorf("no ID in manufacturer response")
 	}
 
-	fmt.Printf("  ✓ Created manufacturer (ID=%d)\n", int(mfrID))
+	fmt.Printf(" ✓ Created manufacturer (ID=%d)\n", int(mfrID))
 	return mfrID, nil
 }
 
@@ -154,7 +152,7 @@ func (n *NetBoxClient) CreateDefaultDeviceType() (float64, error) {
 	}
 
 	// Create Generic device type
-	fmt.Printf("  → Creating default device type: Generic\n")
+	fmt.Printf(" → Creating default device type: Generic\n")
 	payload := map[string]interface{}{
 		"manufacturer": int(mfrID),
 		"model":        "Generic",
@@ -165,7 +163,6 @@ func (n *NetBoxClient) CreateDefaultDeviceType() (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to create device type: %w", err)
 	}
-
 	if status >= 400 {
 		return 0, fmt.Errorf("API error %d creating device type", status)
 	}
@@ -175,10 +172,65 @@ func (n *NetBoxClient) CreateDefaultDeviceType() (float64, error) {
 		return 0, fmt.Errorf("no ID in device type response")
 	}
 
-	fmt.Printf("  ✓ Created device type (ID=%d)\n", int(dtID))
+	fmt.Printf(" ✓ Created device type (ID=%d)\n", int(dtID))
 	return dtID, nil
 }
 
+// GetOrCreateDeviceTypeWithManufacturer gets or creates a device type with specific manufacturer
+func (n *NetBoxClient) GetOrCreateDeviceTypeWithManufacturer(manufacturerID float64, model, slug string) (float64, error) {
+	// Try to get existing device type by model name and manufacturer
+	encodedModel := url.QueryEscape(model)
+	resp, status, err := n.doRequest("GET", fmt.Sprintf("/dcim/device-types/?model=%s&manufacturer_id=%d", encodedModel, int(manufacturerID)), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	if status == 200 {
+		results, ok := resp["results"].([]interface{})
+		if ok && len(results) > 0 {
+			deviceType, ok := results[0].(map[string]interface{})
+			if ok {
+				if id, ok := deviceType["id"].(float64); ok {
+					fmt.Printf(" ✓ Found device type: %s (ID=%d)\n", model, int(id))
+					return id, nil
+				}
+			}
+		}
+	}
+
+	// Device type not found, create it
+	fmt.Printf(" → Creating device type: %s\n", model)
+
+	// Ensure slug is valid (lowercase, alphanumeric + hyphens only)
+	if slug == "" {
+		slug = strings.ToLower(strings.ReplaceAll(model, " ", "-"))
+	}
+	// Remove invalid characters from slug
+	re := regexp.MustCompile(`[^a-z0-9-]`)
+	slug = re.ReplaceAllString(slug, "")
+
+	payload := map[string]interface{}{
+		"manufacturer": int(manufacturerID),
+		"model":        model,
+		"slug":         slug,
+	}
+
+	resp, status, err = n.doRequest("POST", "/dcim/device-types/", payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create device type: %w", err)
+	}
+	if status >= 400 {
+		return 0, fmt.Errorf("API error %d creating device type", status)
+	}
+
+	dtID, ok := resp["id"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("no ID in device type response")
+	}
+
+	fmt.Printf(" ✓ Created device type (ID=%d)\n", int(dtID))
+	return dtID, nil
+}
 
 // doRequest helper for API calls
 func (n *NetBoxClient) doRequest(method, path string, body interface{}) (map[string]interface{}, int, error) {
@@ -256,117 +308,85 @@ func (n *NetBoxClient) GetSiteID(siteName string) (float64, error) {
 	return siteID, nil
 }
 
-
-// GetOrCreateDeviceType gets or creates a device type
-// GetOrCreateDeviceType gets or creates a device type
-func (n *NetBoxClient) GetOrCreateDeviceType(manufacturer, model string) (float64, error) {
-	// URL encode the model to handle spaces
-	encodedModel := url.QueryEscape(model)
-
-	// Try to get existing
-	resp, status, err := n.doRequest("GET", fmt.Sprintf("/dcim/device-types/?model=%s", encodedModel), nil)
-	if err != nil {
-		return 0, err
+// PushARPEntries creates IP addresses in NetBox from ARP entries discovered on source device
+func (n *NetBoxClient) PushARPEntries(sourceSysName string, sourceSiteID float64, arpEntries []snmpclient.ARPEntry) (int, error) {
+	if len(arpEntries) == 0 {
+		return 0, nil
 	}
 
-	if status == 200 {
-		results, ok := resp["results"].([]interface{})
-		if ok && len(results) > 0 {
-			deviceType, ok := results[0].(map[string]interface{})
+	fmt.Printf("→ Creating/updating IP addresses from ARP entries (%d found):\n", len(arpEntries))
+	createdCount := 0
+
+	for _, entry := range arpEntries {
+		ipAddr := entry.IPAddr
+		mac := entry.MACAddr
+
+		// Check if IP address already exists
+		encodedIP := url.QueryEscape(ipAddr)
+		resp, _, _ := n.doRequest("GET", fmt.Sprintf("/ipam/ip-addresses/?address=%s", encodedIP), nil)
+
+		if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+			ipObject, ok := results[0].(map[string]interface{})
 			if ok {
-				if id, ok := deviceType["id"].(float64); ok {
-					fmt.Printf("  ✓ Found device type: %s (ID=%d)\n", model, int(id))
-					return id, nil
+				if id, ok := ipObject["id"].(float64); ok {
+					// IP exists; update description with discovery info
+					fmt.Printf(" ✓ IP %s exists (ID=%d), updating description\n", ipAddr, int(id))
+
+					description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
+					if entry.Hostname != "" {
+						description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
+					}
+
+					updatePayload := map[string]interface{}{
+						"description": description,
+					}
+					n.doRequest("PATCH", fmt.Sprintf("/ipam/ip-addresses/%d/", int(id)), updatePayload)
+					continue
 				}
 			}
 		}
+
+		// Create new IP address entry
+		description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
+		if entry.Hostname != "" {
+			description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
+		}
+
+		payload := map[string]interface{}{
+			"address":     ipAddr + "/32", // NetBox requires CIDR notation
+			"status":      "active",
+			"description": description,
+			"dns_name":    entry.Hostname,
+		}
+
+		// Add custom field for MAC address if available
+		if mac != "" {
+			payload["custom_fields"] = map[string]interface{}{
+				"mac_address": mac,
+			}
+		}
+
+		resp, status, err := n.doRequest("POST", "/ipam/ip-addresses/", payload)
+		if err != nil {
+			fmt.Printf(" ❌ Failed to create IP %s: %v\n", ipAddr, err)
+			continue
+		}
+		if status >= 400 {
+			fmt.Printf(" ❌ API error %d creating IP %s\n", status, ipAddr)
+			continue
+		}
+
+		ipID, ok := resp["id"].(float64)
+		if !ok {
+			continue
+		}
+
+		fmt.Printf(" ✓ Created IP %s (ID=%d)\n", ipAddr, int(ipID))
+		createdCount++
 	}
 
-	// Device type not found, use generic default
-	fmt.Printf("  ⚠ Device type %q not found, using Generic default\n", model)
-	return n.CreateDefaultDeviceType()
-}
-
-// PushARPEntries creates IP addresses in NetBox from ARP entries discovered on source device
-func (n *NetBoxClient) PushARPEntries(sourceSysName string, sourceSiteID float64, arpEntries []snmpclient.ARPEntry) (int, error) {
-    if len(arpEntries) == 0 {
-        return 0, nil
-    }
-
-    fmt.Printf("→ Creating/updating IP addresses from ARP entries (%d found):\n", len(arpEntries))
-
-    createdCount := 0
-    for _, entry := range arpEntries {
-        ipAddr := entry.IPAddr
-        mac := entry.MACAddr
-
-        // Check if IP address already exists
-        encodedIP := url.QueryEscape(ipAddr)
-        resp, _, _ := n.doRequest("GET", fmt.Sprintf("/ipam/ip-addresses/?address=%s", encodedIP), nil)
-
-        if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
-            ipObject, ok := results[0].(map[string]interface{})
-            if ok {
-                if id, ok := ipObject["id"].(float64); ok {
-                    // IP exists; update description with discovery info
-                    fmt.Printf("  ✓ IP %s exists (ID=%d), updating description\n", ipAddr, int(id))
-                    
-                    description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
-                    if entry.Hostname != "" {
-                        description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
-                    }
-                    
-                    updatePayload := map[string]interface{}{
-                        "description": description,
-                    }
-                    n.doRequest("PATCH", fmt.Sprintf("/ipam/ip-addresses/%d/", int(id)), updatePayload)
-                    continue
-                }
-            }
-        }
-
-        // Create new IP address entry
-        description := fmt.Sprintf("Discovered via ARP on %s | MAC: %s", sourceSysName, mac)
-        if entry.Hostname != "" {
-            description = fmt.Sprintf("%s | Hostname: %s", entry.Hostname, description)
-        }
-
-        payload := map[string]interface{}{
-            "address":     ipAddr + "/32", // NetBox requires CIDR notation
-            "status":      "active",
-            "description": description,
-            "dns_name":    entry.Hostname,
-        }
-
-        // Add custom field for MAC address if available
-        if mac != "" {
-            payload["custom_fields"] = map[string]interface{}{
-                "mac_address": mac,
-            }
-        }
-
-        resp, status, err := n.doRequest("POST", "/ipam/ip-addresses/", payload)
-        if err != nil {
-            fmt.Printf("  ❌ Failed to create IP %s: %v\n", ipAddr, err)
-            continue
-        }
-
-        if status >= 400 {
-            fmt.Printf("  ❌ API error %d creating IP %s\n", status, ipAddr)
-            continue
-        }
-
-        ipID, ok := resp["id"].(float64)
-        if !ok {
-            continue
-        }
-
-        fmt.Printf("  ✓ Created IP %s (ID=%d)\n", ipAddr, int(ipID))
-        createdCount++
-    }
-
-    fmt.Printf("  Created %d/%d IP addresses from ARP entries\n", createdCount, len(arpEntries))
-    return createdCount, nil
+	fmt.Printf(" Created %d/%d IP addresses from ARP entries\n", createdCount, len(arpEntries))
+	return createdCount, nil
 }
 
 // createInterfaceForARPDevice creates an interface with the MAC address as name
@@ -374,7 +394,8 @@ func (n *NetBoxClient) createInterfaceForARPDevice(deviceID float64, macAddress 
 	payload := map[string]interface{}{
 		"device":      int(deviceID),
 		"name":        macAddress,
-		"type":        "virtual",
+		"type":
+		"virtual",
 		"description": "MAC address interface",
 	}
 
@@ -382,18 +403,16 @@ func (n *NetBoxClient) createInterfaceForARPDevice(deviceID float64, macAddress 
 	if err != nil {
 		return fmt.Errorf("failed to create interface: %w", err)
 	}
-
 	if status >= 400 {
 		return fmt.Errorf("API error %d", status)
 	}
 
 	if _, ok := resp["id"]; ok {
-		fmt.Printf("    ✓ Created interface: %s\n", macAddress)
+		fmt.Printf(" ✓ Created interface: %s\n", macAddress)
 	}
 
 	return nil
 }
-
 
 // UpdateDeviceNotes appends discovery info to device notes
 func (n *NetBoxClient) UpdateDeviceNotes(deviceID float64, sourceSysName, ip, mac string) error {
@@ -425,8 +444,7 @@ func (n *NetBoxClient) UpdateDeviceNotes(deviceID float64, sourceSysName, ip, ma
 	return nil
 }
 
-
-// PushDevice creates a device in NetBox
+// PushDevice creates a device in NetBox with proper manufacturer and device type detection
 func (n *NetBoxClient) PushDevice(deviceInfo *snmpclient.DeviceInfo, siteName, deviceRole string) (float64, error) {
 	if deviceInfo == nil || deviceInfo.SysName == "" {
 		return 0, fmt.Errorf("invalid device info")
@@ -439,21 +457,38 @@ func (n *NetBoxClient) PushDevice(deviceInfo *snmpclient.DeviceInfo, siteName, d
 		device, ok := results[0].(map[string]interface{})
 		if ok {
 			if id, ok := device["id"].(float64); ok {
-				fmt.Printf("  ✓ Device %s already exists (ID=%d)\n", deviceInfo.SysName, int(id))
+				fmt.Printf(" ✓ Device %s already exists (ID=%d)\n", deviceInfo.SysName, int(id))
 				return id, nil
 			}
 		}
 	}
 
 	fmt.Printf("→ Creating device in NetBox:\n")
-	fmt.Printf("  Name: %s\n", deviceInfo.SysName)
-	fmt.Printf("  Site: %s\n", siteName)
-	fmt.Printf("  Role: %s\n", deviceRole)
+	fmt.Printf(" Name: %s\n", deviceInfo.SysName)
+	fmt.Printf(" SysObjectID: %s\n", deviceInfo.SysObjectID)
+	fmt.Printf(" SysDescr: %s\n", deviceInfo.SysDescr)
+
+	// Parse manufacturer and model from SNMP data
+	deviceTypeInfo := ParseDeviceType(deviceInfo.SysObjectID, deviceInfo.SysDescr)
+	fmt.Printf(" Detected Manufacturer: %s\n", deviceTypeInfo.Manufacturer)
+	fmt.Printf(" Detected Model: %s\n", deviceTypeInfo.Model)
 
 	// Get site ID
 	siteID, err := n.GetSiteID(siteName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get site: %w", err)
+	}
+
+	// Get or create manufacturer
+	mfrID, err := n.GetOrCreateManufacturer(deviceTypeInfo.Manufacturer)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get manufacturer: %w", err)
+	}
+
+	// Get or create device type
+	deviceTypeID, err := n.GetOrCreateDeviceTypeWithManufacturer(mfrID, deviceTypeInfo.Model, deviceTypeInfo.Slug)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get device type: %w", err)
 	}
 
 	// Get or create device role
@@ -462,20 +497,13 @@ func (n *NetBoxClient) PushDevice(deviceInfo *snmpclient.DeviceInfo, siteName, d
 		return 0, fmt.Errorf("failed to get role: %w", err)
 	}
 
-	// Get device type (for now, use model from sysDescr)
-	deviceTypeID, err := n.GetOrCreateDeviceType("Unknown", deviceInfo.SysDescr)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get device type: %w", err)
-	}
-
 	// Create device payload
 	payload := map[string]interface{}{
 		"name":        deviceInfo.SysName,
 		"site":        int(siteID),
 		"device_type": int(deviceTypeID),
-		"role":        int(roleID),  // ← ADD ROLE
+		"role":        int(roleID),
 		"comments":    deviceInfo.SysDescr,
-		//"serial":      deviceInfo.SysObjectID,
 		"asset_tag":   deviceInfo.SysName,
 	}
 
@@ -483,7 +511,6 @@ func (n *NetBoxClient) PushDevice(deviceInfo *snmpclient.DeviceInfo, siteName, d
 	if err != nil {
 		return 0, fmt.Errorf("failed to create device: %w", err)
 	}
-
 	if status >= 400 {
 		return 0, fmt.Errorf("API error %d: failed to create device", status)
 	}
@@ -493,128 +520,77 @@ func (n *NetBoxClient) PushDevice(deviceInfo *snmpclient.DeviceInfo, siteName, d
 		return 0, fmt.Errorf("no ID in device response")
 	}
 
-	fmt.Printf("  ✓ Created device with ID=%d\n", int(deviceID))
+	fmt.Printf(" ✓ Created device with ID=%d\n", int(deviceID))
 	return deviceID, nil
 }
 
-// mapInterfaceType converts SNMP interface type to NetBox interface type
-func mapInterfaceType(snmpType string) string {
-    typeMap := map[string]string{
-        "6":   "1000base-t",    // ethernetCsmacd
-        "24":  "lag",           // softwareLoopback
-        "53":  "virtual",       // propVirtual
-        "131": "lag",           // tunnel
-        "135": "lag",           // l2vlan
-        "136": "lag",           // l3ipvlan
-        "161": "ieee802.11a",   // ieee80211
-        "209": "bridge",        // bridge
-        "other": "other",
-    }
-    
-    if mapped, ok := typeMap[snmpType]; ok {
-        return mapped
-    }
-    return "other"
-}
-
-// PushInterfaces creates or updates interfaces for a device
+// PushInterfaces creates interfaces for a device
 func (n *NetBoxClient) PushInterfaces(deviceID float64, ifaces []snmpclient.InterfaceInfo) error {
-    log.Printf("→ Creating/updating interfaces for device %d:", int(deviceID))
-    created := 0
-    updated := 0
+	if deviceID == 0 || len(ifaces) == 0 {
+		return fmt.Errorf("invalid device ID or empty interfaces")
+	}
 
-    for _, iface := range ifaces {
-        ifType := mapInterfaceType(iface.Type)
+	fmt.Printf("→ Creating interfaces for device %d:\n", int(deviceID))
+	successCount := 0
 
-        // Check if interface already exists
-        checkURL := fmt.Sprintf("/dcim/interfaces/?device_id=%d&name=%s",
-            int(deviceID), url.QueryEscape(iface.Name))
-        resp, status, err := n.doRequest("GET", checkURL, nil)
-        if err != nil {
-            log.Printf("  ❌ Error checking interface %s: %v", iface.Name, err)
-            continue
-        }
+	for _, iface := range ifaces {
+		if iface.Name == "" {
+			continue
+		}
 
-        interfaceData := map[string]interface{}{
-            "device": deviceID,
-            "name":   iface.Name,
-            "type":   ifType,
-        }
+		// Map interface type number to NetBox type
+		ifType := "1000base-t"
+		if iface.Type == "1" {
+			ifType = "virtual"
+		} else if iface.Type == "6" {
+			ifType = "1000base-t"
+		}
 
-        // Speed is a string in the struct, convert if numeric
-        if iface.Speed != "" {
-            if speed, err := strconv.ParseInt(iface.Speed, 10, 64); err == nil && speed > 0 {
-                interfaceData["speed"] = speed / 1000 // Convert to kbps
-            }
-        }
+		payload := map[string]interface{}{
+			"device":      int(deviceID),
+			"name":        iface.Name,
+			"type":        ifType,
+			"description": iface.Alias,
+		}
 
-        if iface.Alias != "" {
-            interfaceData["description"] = iface.Alias
-        }
+		resp, status, err := n.doRequest("POST", "/dcim/interfaces/", payload)
+		if err != nil {
+			fmt.Printf(" ❌ Failed to create interface %s: %v\n", iface.Name, err)
+			continue
+		}
+		if status >= 400 {
+			fmt.Printf(" ❌ API error %d creating interface %s\n", status, iface.Name)
+			continue
+		}
 
-        var interfaceID float64
+		interfaceID, ok := resp["id"].(float64)
+		if !ok {
+			continue
+		}
 
-        if status == 200 {
-            results, ok := resp["results"].([]interface{})
-            if ok && len(results) > 0 {
-                // Interface exists - update it
-                existing := results[0].(map[string]interface{})
-                interfaceID = existing["id"].(float64)
-                _, status, err = n.doRequest("PATCH", fmt.Sprintf("/dcim/interfaces/%d/", int(interfaceID)), interfaceData)
-                if err != nil {
-                    log.Printf("  ❌ Error updating interface %s: %v", iface.Name, err)
-                    continue
-                }
-                if status == 200 {
-                    updated++
-                }
+		fmt.Printf(" ✓ Created interface: %s\n", iface.Name)
+		successCount++
 
-                // Still need to handle IPs for existing interfaces
-                for _, ip := range iface.IPs {
-                    if ip != "" && !strings.HasPrefix(ip, "127.") && !strings.HasPrefix(ip, "0.") {
-                        if err := n.addIPToInterface(interfaceID, ip); err != nil {
-                            log.Printf("    ⚠ Failed to add IP %s: %v", ip, err)
-                        }
-                    }
-                }
-                continue
-            }
-        }
+		// Add IP addresses to this interface
+		if len(iface.IPs) > 0 {
+			for _, ip := range iface.IPs {
+				if err := n.addIPToInterface(interfaceID, ip); err != nil {
+					fmt.Printf(" ⚠ Failed to add IP %s: %v\n", ip, err)
+				} else {
+					fmt.Printf(" ✓ Added IP: %s\n", ip)
+				}
+			}
+		}
+	}
 
-        // Interface doesn't exist - create it
-        resp, status, err = n.doRequest("POST", "/dcim/interfaces/", interfaceData)
-        if err != nil {
-            log.Printf("  ❌ Error creating interface %s: %v", iface.Name, err)
-            continue
-        }
-        if status == 201 {
-            created++
-            interfaceID = resp["id"].(float64)
-        } else {
-            log.Printf("  ❌ API error %d creating interface %s", status, iface.Name)
-            continue
-        }
-
-        // Add IP addresses to interface
-        for _, ip := range iface.IPs {
-            if ip != "" && !strings.HasPrefix(ip, "127.") && !strings.HasPrefix(ip, "0.") {
-                if err := n.addIPToInterface(interfaceID, ip); err != nil {
-                    log.Printf("    ⚠ Failed to add IP %s: %v", ip, err)
-                }
-            }
-        }
-    }
-
-    log.Printf("  Created %d, updated %d of %d interfaces", created, updated, len(ifaces))
-    return nil
+	fmt.Printf(" Created %d/%d interfaces\n", successCount, len(ifaces))
+	return nil
 }
-
-
 
 // addIPToInterface creates an IP address assignment in NetBox
 func (n *NetBoxClient) addIPToInterface(interfaceID float64, ip string) error {
 	payload := map[string]interface{}{
-		"address":   ip + "/32",  // NetBox requires CIDR notation
+		"address":              ip + "/32", // NetBox requires CIDR notation
 		"assigned_object_type": "dcim.interface",
 		"assigned_object_id":   int(interfaceID),
 		"status":               "active",
@@ -624,121 +600,9 @@ func (n *NetBoxClient) addIPToInterface(interfaceID float64, ip string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create IP: %w", err)
 	}
-
 	if status >= 400 {
 		return fmt.Errorf("API error %d", status)
 	}
 
 	return nil
-}
-
-// PushDeviceWithType creates or updates a device with an optional device type
-func (n *NetBoxClient) PushDeviceWithType(info *snmpclient.DeviceInfo, siteName, roleName string, deviceTypeID float64) (float64, error) {
-    siteID, err := n.GetSiteID(siteName)
-    if err != nil {
-        return 0, fmt.Errorf("failed to get site: %w", err)
-    }
-
-    roleID, err := n.GetOrCreateDeviceRole(roleName)
-    if err != nil {
-        return 0, fmt.Errorf("failed to get/create role: %w", err)
-    }
-
-    // Check if device exists
-    resp, status, err := n.doRequest("GET", "/dcim/devices/?name="+url.QueryEscape(info.SysName), nil)
-    if err != nil {
-        return 0, err
-    }
-
-    var deviceID float64
-    if status == 200 {
-        results, ok := resp["results"].([]interface{})
-        if ok && len(results) > 0 {
-            deviceID = results[0].(map[string]interface{})["id"].(float64)
-        }
-    }
-
-    if deviceID > 0 {
-        // Update existing device
-        updates := map[string]interface{}{
-            "comments": fmt.Sprintf("sysDescr: %s\nsysContact: %s",
-                info.SysDescr, info.SysContact),
-        }
-        if deviceTypeID > 0 {
-            updates["device_type"] = deviceTypeID
-        }
-        _, _, err = n.doRequest("PATCH", fmt.Sprintf("/dcim/devices/%d/", int(deviceID)), updates)
-        return deviceID, err
-    }
-
-    // Create new device - need a device type
-    if deviceTypeID == 0 {
-        // Use or create a generic device type
-        deviceTypeID, err = n.GetOrCreateGenericDeviceType()
-        if err != nil {
-            return 0, fmt.Errorf("failed to get generic device type: %w", err)
-        }
-    }
-
-    data := map[string]interface{}{
-        "name":        info.SysName,
-        "site":        siteID,
-        "role":        roleID,
-        "device_type": deviceTypeID,
-        "status":      "active",
-        "comments": fmt.Sprintf("sysDescr: %s\nsysContact: %s",
-            info.SysDescr, info.SysContact),
-    }
-
-    resp, status, err = n.doRequest("POST", "/dcim/devices/", data)
-    if err != nil {
-        return 0, err
-    }
-
-    if status != 201 {
-        return 0, fmt.Errorf("failed to create device, status: %d", status)
-    }
-
-    return resp["id"].(float64), nil
-}
-
-// GetOrCreateGenericDeviceType ensures a generic device type exists
-func (n *NetBoxClient) GetOrCreateGenericDeviceType() (float64, error) {
-    // Try to get existing
-    resp, status, err := n.doRequest("GET", "/dcim/device-types/?model=Generic", nil)
-    if err != nil {
-        return 0, err
-    }
-
-    if status == 200 {
-        results, ok := resp["results"].([]interface{})
-        if ok && len(results) > 0 {
-            return results[0].(map[string]interface{})["id"].(float64), nil
-        }
-    }
-
-    // Create generic manufacturer first
-    mfrID, err := n.GetOrCreateManufacturer("Generic")
-    if err != nil {
-        return 0, err
-    }
-
-    // Create generic device type
-    data := map[string]interface{}{
-        "manufacturer": mfrID,
-        "model":        "Generic",
-        "slug":         "generic",
-        "u_height":     1,
-    }
-
-    resp, status, err = n.doRequest("POST", "/dcim/device-types/", data)
-    if err != nil {
-        return 0, err
-    }
-
-    if status != 201 {
-        return 0, fmt.Errorf("failed to create generic device type, status: %d", status)
-    }
-
-    return resp["id"].(float64), nil
 }
