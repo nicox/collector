@@ -89,6 +89,28 @@ type InterfaceInfo struct {
 	IPs       []string  
 }
 
+// SophosFirewallInfo contains Sophos-specific information
+type SophosFirewallInfo struct {
+    SerialNumber      string
+    Model             string
+    FirmwareVersion   string
+    DeviceType        string
+    LicenseStatus     string
+    LicenseExpiry     string
+    CPUUsage          string
+    MemoryTotal       string
+    MemoryFree        string
+    MemoryUsagePercent float64
+    DiskUsage         string
+    ActiveConnections string
+    TotalConnections  string
+    HAEnabled         bool
+    HAStatus          string
+    HAPeerSerial      string
+    HAMode            string
+}
+
+
 func (c *Client) GetDeviceInfo() (*DeviceInfo, error) {
 	oIDs := []string{
 		oidSysObjectID,
@@ -309,6 +331,48 @@ const (
 	oidIpAdEntAddr      = ".1.3.6.1.2.1.4.20.1.1"  // ipAdEntAddr (IP address)
 	oidIpAdEntIfIndex   = ".1.3.6.1.2.1.4.20.1.2"  // ipAdEntIfIndex (interface index)
 	oidIpAdEntNetMask   = ".1.3.6.1.2.1.4.20.1.3"  // ipAdEntNetMask
+
+	// Sophos Firewall OIDs - Updated for SFOS (XG/XGS)
+   
+        // Sophos SFOS-FIREWALL-MIB (.1.3.6.1.4.1.2604.1.1.1)
+    oidSophosModel           = ".1.3.6.1.4.1.2604.1.1.1.2.1.2.0"
+    
+    // License Information
+    oidSophosLicenseExpiry   = ".1.3.6.1.4.1.2604.1.1.1.3.2.0"
+    
+    // System Resources
+    oidSophosMemoryFree      = ".1.3.6.1.4.1.2604.1.1.1.1.1.3.0"
+    
+    // Connection Statistics
+    oidSophosActiveConns     = ".1.3.6.1.4.1.2604.1.1.1.7.1.0"
+    oidSophosTotalConns      = ".1.3.6.1.4.1.2604.1.1.1.7.2.0"
+    
+    	
+    // Sophos SFOS MIB (.1.3.6.1.4.1.2604.5.1)
+    oidSophosHostname        = ".1.3.6.1.4.1.2604.5.1.1.1.0"
+    oidSophosDeviceType      = ".1.3.6.1.4.1.2604.5.1.1.2.0"
+    oidSophosFirmwareVersion = ".1.3.6.1.4.1.2604.5.1.1.3.0"
+    oidSophosSerialNumber    = ".1.3.6.1.4.1.2604.5.1.1.4.0"
+    oidSophosLicenseStatus   = ".1.3.6.1.4.1.2604.5.1.1.5.0"
+    oidSophosFirmwareDate    = ".1.3.6.1.4.1.2604.5.1.1.6.0"
+    
+    // System Resources
+    oidSophosCPUUsage        = ".1.3.6.1.4.1.2604.5.1.2.4.2.0"  // CPU usage percentage
+    oidSophosMemoryUsage     = ".1.3.6.1.4.1.2604.5.1.2.5.4.0"  // Memory usage percentage
+    oidSophosMemoryTotal     = ".1.3.6.1.4.1.2604.5.1.2.5.1.0"  // Total memory MB
+    oidSophosMemoryUsed      = ".1.3.6.1.4.1.2604.5.1.2.5.3.0"  // Used memory MB
+    oidSophosDiskUsage       = ".1.3.6.1.4.1.2604.5.1.2.5.2.0"  // Disk usage percentage
+    
+    // HA Information
+    oidSophosHAStatus        = ".1.3.6.1.4.1.2604.5.1.4.1.0"    // HA status (0=disabled)
+    oidSophosHAPeerSerial    = ".1.3.6.1.4.1.2604.5.1.4.2.0"    // HA peer serial
+    oidSophosHAMode          = ".1.3.6.1.4.1.2604.5.1.4.4.0"    // HA mode
+    
+    // Service Status (.1.3.6.1.4.1.2604.5.1.3.x.0)
+    oidSophosServiceHTTP     = ".1.3.6.1.4.1.2604.5.1.3.1.0"
+    oidSophosServiceFTP      = ".1.3.6.1.4.1.2604.5.1.3.2.0"
+    oidSophosServiceSMTP     = ".1.3.6.1.4.1.2604.5.1.3.3.0"
+
 )
 
 // WalkIPAddresses gets IP addresses mapped to interfaces
@@ -518,3 +582,128 @@ func (c *Client) WalkIfDescr() (map[string]string, error) {
 	return out, nil
 }
 
+// GetSophosFirewallInfo retrieves Sophos-specific information
+func (c *Client) GetSophosFirewallInfo() (*SophosFirewallInfo, error) {
+    info := &SophosFirewallInfo{}
+    
+    fmt.Println("  → Attempting to collect Sophos device information...")
+    
+    // Get basic system information (all available OIDs)
+    basicOIDs := []string{
+        oidSophosHostname,
+        oidSophosDeviceType,
+        oidSophosFirmwareVersion,
+        oidSophosSerialNumber,
+        oidSophosLicenseStatus,
+        oidSophosFirmwareDate,
+    }
+    
+    basicPkt, err := c.s.Get(basicOIDs)
+    if err == nil && len(basicPkt.Variables) >= 4 {
+        info.Model = toString(basicPkt.Variables[1].Value)
+        info.FirmwareVersion = toString(basicPkt.Variables[2].Value)
+        info.SerialNumber = toString(basicPkt.Variables[3].Value)
+        
+        if len(basicPkt.Variables) >= 5 {
+            info.LicenseStatus = toString(basicPkt.Variables[4].Value)
+        }
+        
+        fmt.Printf("  ✓ Model: %s\n", info.Model)
+        fmt.Printf("  ✓ Serial: %s\n", info.SerialNumber)
+        fmt.Printf("  ✓ Firmware: %s\n", info.FirmwareVersion)
+        if info.LicenseStatus != "" {
+            fmt.Printf("  ✓ License: %s\n", info.LicenseStatus)
+        }
+    } else {
+        return nil, fmt.Errorf("failed to get basic Sophos info: %w", err)
+    }
+    
+    // Get resource metrics
+    resourceOIDs := []string{
+        oidSophosCPUUsage,
+        oidSophosMemoryUsage,
+        oidSophosMemoryTotal,
+        oidSophosMemoryUsed,
+        oidSophosDiskUsage,
+    }
+    
+    resourcePkt, err := c.s.Get(resourceOIDs)
+    if err == nil && len(resourcePkt.Variables) >= 5 {
+        info.CPUUsage = toString(resourcePkt.Variables[0].Value)
+        memUsagePercent := toString(resourcePkt.Variables[1].Value)
+        info.MemoryTotal = toString(resourcePkt.Variables[2].Value)
+        memUsed := toString(resourcePkt.Variables[3].Value)
+        info.DiskUsage = toString(resourcePkt.Variables[4].Value)
+        
+        // Parse memory usage percentage
+        if memPct, err := strconv.ParseFloat(memUsagePercent, 64); err == nil {
+            info.MemoryUsagePercent = memPct
+        }
+        
+        // Store memory values for NetBox
+        info.MemoryFree = memUsed // We'll use this field for used memory
+        
+        fmt.Printf("  ✓ CPU Usage: %s%%\n", info.CPUUsage)
+        fmt.Printf("  ✓ Memory Usage: %.0f%%\n", info.MemoryUsagePercent)
+        fmt.Printf("  ✓ Disk Usage: %s%%\n", info.DiskUsage)
+    }
+    
+    // Get HA information
+    haOIDs := []string{
+        oidSophosHAStatus,
+        oidSophosHAPeerSerial,
+        oidSophosHAMode,
+    }
+    
+    haPkt, err := c.s.Get(haOIDs)
+    if err == nil && len(haPkt.Variables) >= 3 {
+        haStatus := toString(haPkt.Variables[0].Value)
+        info.HAPeerSerial = toString(haPkt.Variables[1].Value)
+        haMode := toString(haPkt.Variables[2].Value)
+        
+        // Convert HA status (0 = disabled, 1+ = enabled)
+        if haStatus == "0" {
+            info.HAEnabled = false
+            info.HAStatus = "disabled"
+        } else {
+            info.HAEnabled = true
+            info.HAStatus = "enabled"
+            info.HAMode = haMode
+            fmt.Printf("  ✓ HA: Enabled (Mode: %s, Peer: %s)\n", info.HAMode, info.HAPeerSerial)
+        }
+    }
+    
+    return info, nil
+}
+
+
+// IsSophosDevice checks if the device is a Sophos firewall
+func (c *Client) IsSophosDevice() bool {
+    pkt, err := c.s.Get([]string{oidSophosModel})
+    if err != nil || len(pkt.Variables) == 0 {
+        return false
+    }
+    model := toString(pkt.Variables[0].Value)
+    return model != ""
+}
+
+// DebugWalkSophosOIDs walks the Sophos OID tree to discover available OIDs
+func (c *Client) DebugWalkSophosOIDs() error {
+    fmt.Println("\n→ Walking Sophos OID tree (.1.3.6.1.4.1.2604)...")
+    count := 0
+    
+    err := c.s.Walk(".1.3.6.1.4.1.2604", func(variable g.SnmpPDU) error {
+        count++
+        if count <= 50 { // Limit output
+            fmt.Printf("  %s = %v (type: %v)\n", variable.Name, variable.Value, variable.Type)
+        }
+        return nil
+    })
+    
+    if err != nil {
+        return fmt.Errorf("walk failed: %w", err)
+    }
+    
+    fmt.Printf("  Found %d OIDs under Sophos tree\n", count)
+    return nil
+}

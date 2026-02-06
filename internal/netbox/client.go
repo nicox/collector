@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"snmp-collector/internal/snmpclient"
 	"strings"
+	"strconv"
+	"time"
 )
 
 type NetBoxClient struct {
@@ -606,3 +608,233 @@ func (n *NetBoxClient) addIPToInterface(interfaceID float64, ip string) error {
 
 	return nil
 }
+
+// EnsureSophosCustomFields creates custom fields for Sophos firewalls if they don't exist
+func (n *NetBoxClient) EnsureSophosCustomFields() error {
+    customFields := []map[string]interface{}{
+        {
+            "name":         "serial_number",
+            "type":         "text",
+            "object_types": []string{"dcim.device"},  // Changed from content_types
+            "description":  "Device serial number",
+            "group_name":   "Hardware",
+        },
+        {
+            "name":         "firmware_version",
+            "label":        "Firmware Version",
+            "type":         "text",
+            "object_types": []string{"dcim.device"},  // Changed from content_types
+            "description":  "Current firmware version",
+            "group_name":   "Software",
+        },
+        {
+            "name":         "license_status",
+            "label":        "License Status",
+            "type":         "text",
+            "object_types": []string{"dcim.device"},
+            "description":  "Current license status",
+            "group_name":   "Licensing",
+        },
+        {
+            "name":         "license_expiry",
+            "label":        "License Expiration",
+            "type":         "date",
+            "object_types": []string{"dcim.device"},
+            "description":  "License expiration date",
+            "group_name":   "Licensing",
+        },
+        {
+            "name":         "cpu_usage_percent",
+            "label":        "CPU Usage %",
+            "type":         "integer",
+            "object_types": []string{"dcim.device"},
+            "description":  "Current CPU usage percentage",
+            "group_name":   "Statistics",
+        },
+        {
+            "name":         "memory_total_mb",
+            "label":        "Total Memory (MB)",
+            "type":         "integer",
+            "object_types": []string{"dcim.device"},
+            "description":  "Total system memory in megabytes",
+            "group_name":   "Hardware",
+        },
+        {
+            "name":         "memory_usage_percent",
+            "label":        "Memory Usage %",
+            "type":         "integer",
+            "object_types": []string{"dcim.device"},
+            "description":  "Current memory usage percentage",
+            "group_name":   "Statistics",
+        },
+        {
+            "name":         "disk_usage_percent",
+            "label":        "Disk Usage %",
+            "type":         "integer",
+            "object_types": []string{"dcim.device"},
+            "description":  "Current disk usage percentage",
+            "group_name":   "Statistics",
+        },
+        {
+            "name":         "active_connections",
+            "label":        "Active Connections",
+            "type":         "integer",
+            "object_types": []string{"dcim.device"},
+            "description":  "Current number of active connections",
+            "group_name":   "Statistics",
+        },
+        {
+            "name":         "ha_enabled",
+            "label":        "HA Enabled",
+            "type":         "boolean",
+            "object_types": []string{"dcim.device"},
+            "description":  "High Availability configuration status",
+            "group_name":   "Clustering",
+        },
+        {
+            "name":         "ha_status",
+            "label":        "HA Status",
+            "type":         "text",
+            "object_types": []string{"dcim.device"},
+            "description":  "High Availability current status",
+            "group_name":   "Clustering",
+        },
+        {
+            "name":         "ha_peer_serial",
+            "label":        "HA Peer Serial",
+            "type":         "text",
+            "object_types": []string{"dcim.device"},
+            "description":  "Serial number of HA peer device",
+            "group_name":   "Clustering",
+        },
+        {
+            "name":         "last_discovered",
+            "label":        "Last Discovered",
+            "type":         "date",
+            "object_types": []string{"dcim.device"},
+            "description":  "Timestamp of last successful discovery",
+            "group_name":   "Discovery",
+        },
+    }
+    
+    for _, field := range customFields {
+        // Check if field exists
+        name := field["name"].(string)
+        resp, _, _ := n.doRequest("GET", fmt.Sprintf("/extras/custom-fields/?name=%s", url.QueryEscape(name)), nil)
+        
+        if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+            fmt.Printf(" ✓ Custom field '%s' already exists\n", name)
+            continue
+        }
+        
+        // Create field
+        fmt.Printf(" → Creating custom field: %s\n", name)
+        _, status, err := n.doRequest("POST", "/extras/custom-fields/", field)
+        if err != nil || status >= 400 {
+            fmt.Printf(" ❌ Failed to create custom field %s: %v (status: %d)\n", name, err, status)
+            continue
+        }
+        fmt.Printf(" ✓ Created custom field: %s\n", name)
+    }
+    
+    return nil
+}
+
+// UpdateDeviceWithSophosInfo updates a device with Sophos-specific information
+func (n *NetBoxClient) UpdateDeviceWithSophosInfo(deviceID float64, sophosInfo *snmpclient.SophosFirewallInfo) error {
+    if sophosInfo == nil {
+        return fmt.Errorf("sophosInfo is nil")
+    }
+    
+    customFields := map[string]interface{}{}
+    
+    if sophosInfo.FirmwareVersion != "" {
+        customFields["firmware_version"] = sophosInfo.FirmwareVersion
+    }
+    if sophosInfo.LicenseStatus != "" {
+        customFields["license_status"] = sophosInfo.LicenseStatus
+    }
+    
+    // Only add license expiry if it's a valid date (not empty or "Not Available")
+    if sophosInfo.LicenseExpiry != "" && 
+       sophosInfo.LicenseExpiry != "Not Available" &&
+       sophosInfo.LicenseExpiry != "0" {
+        // Try to parse and reformat the date if needed
+        if parsedDate, err := time.Parse("2006-01-02", sophosInfo.LicenseExpiry); err == nil {
+            customFields["license_expiry"] = parsedDate.Format("2006-01-02")
+        } else if parsedDate, err := time.Parse("02/01/2006", sophosInfo.LicenseExpiry); err == nil {
+            customFields["license_expiry"] = parsedDate.Format("2006-01-02")
+        }
+        // If parsing fails, skip the field
+    }
+    
+    // Parse and add numeric values
+    if cpuUsage, err := strconv.Atoi(sophosInfo.CPUUsage); err == nil {
+        customFields["cpu_usage_percent"] = cpuUsage
+    }
+    
+    if memTotal, err := strconv.ParseFloat(sophosInfo.MemoryTotal, 64); err == nil && memTotal > 0 {
+        customFields["memory_total_mb"] = int(memTotal)
+    }
+    
+    if sophosInfo.MemoryUsagePercent > 0 {
+        customFields["memory_usage_percent"] = int(sophosInfo.MemoryUsagePercent)
+    }
+    
+    if diskUsage, err := strconv.Atoi(sophosInfo.DiskUsage); err == nil {
+        customFields["disk_usage_percent"] = diskUsage
+    }
+    
+    // HA information
+    customFields["ha_enabled"] = sophosInfo.HAEnabled
+    if sophosInfo.HAStatus != "" {
+        customFields["ha_status"] = sophosInfo.HAStatus
+    }
+    if sophosInfo.HAPeerSerial != "" && sophosInfo.HAEnabled {
+        customFields["ha_peer_serial"] = sophosInfo.HAPeerSerial
+    }
+    
+    // Add discovery timestamp
+    customFields["last_discovered"] = time.Now().Format("2006-01-02")
+    
+    // Update device
+    payload := map[string]interface{}{
+        "custom_fields": customFields,
+    }
+    
+    // Also update device serial field
+    if sophosInfo.SerialNumber != "" {
+        payload["serial"] = sophosInfo.SerialNumber
+    }
+    
+    // Update comments with additional info
+    comments := fmt.Sprintf("Sophos %s\nSerial: %s\nFirmware: %s\nLast Discovery: %s",
+        sophosInfo.Model,
+        sophosInfo.SerialNumber,
+        sophosInfo.FirmwareVersion,
+        time.Now().Format("2006-01-02 15:04:05"))
+    
+    if sophosInfo.HAEnabled {
+        comments += fmt.Sprintf("\nHA: Enabled (Peer: %s)", sophosInfo.HAPeerSerial)
+    }
+    
+    if sophosInfo.LicenseStatus != "" {
+        comments += fmt.Sprintf("\nLicense: %s", sophosInfo.LicenseStatus)
+    }
+    
+    payload["comments"] = comments
+    
+    _, status, err := n.doRequest("PATCH", fmt.Sprintf("/dcim/devices/%d/", int(deviceID)), payload)
+    if err != nil || status >= 400 {
+        return fmt.Errorf("failed to update device (status %d): %w", status, err)
+    }
+    
+    fmt.Printf(" ✓ Updated device with Sophos information\n")
+    fmt.Printf("   - Serial: %s\n", sophosInfo.SerialNumber)
+    fmt.Printf("   - Firmware: %s\n", sophosInfo.FirmwareVersion)
+    fmt.Printf("   - CPU: %s%%, Memory: %.0f%%, Disk: %s%%\n", 
+        sophosInfo.CPUUsage, sophosInfo.MemoryUsagePercent, sophosInfo.DiskUsage)
+    
+    return nil
+}
+
