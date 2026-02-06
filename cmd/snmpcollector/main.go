@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"snmp-collector/internal/config"
+    "snmp-collector/internal/collectors/cisco"
+    "snmp-collector/internal/devicetypes"
 	snmpclient "snmp-collector/internal/snmpclient"
 	nbclient "snmp-collector/internal/netbox"
 )
