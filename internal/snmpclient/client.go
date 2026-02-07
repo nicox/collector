@@ -7,6 +7,7 @@ import (
 	"strings"
 	"net"
 	"context"
+	"log"
 	//"sync"
 
 	g "github.com/gosnmp/gosnmp"
@@ -57,6 +58,8 @@ type MacEntry struct {
 type Config struct {
 	Target       string
 	Port         uint16
+	Version      string // "2c" or "3"
+	Community    string // for SNMPv2c
 	User         string
 	AuthProtocol string
 	AuthPassword string
@@ -206,30 +209,45 @@ func (c *Client) WalkInterfaces() ([]InterfaceInfo, error) {
 
 
 func New(cfg Config) (*Client, error) {
-	authProto, err := parseAuthProtocol(cfg.AuthProtocol)
-	if err != nil {
-		return nil, err
-	}
-	privProto, err := parsePrivProtocol(cfg.PrivProtocol)
-	if err != nil {
-		return nil, err
+	snmp := &g.GoSNMP{
+		Target:  cfg.Target,
+		Port:    cfg.Port,
+		Timeout: cfg.Timeout,
+		Retries: cfg.Retries,
 	}
 
-	snmp := &g.GoSNMP{
-		Target:             cfg.Target,
-		Port:               cfg.Port,
-		Version:            g.Version3,
-		Timeout:            cfg.Timeout,
-		Retries:            cfg.Retries,
-		SecurityModel:      g.UserSecurityModel,
-		MsgFlags:           g.AuthPriv,
-		SecurityParameters: &g.UsmSecurityParameters{
+	// Configure based on SNMP version
+	if cfg.Version == "2c" {
+		// SNMPv2c configuration
+		snmp.Version = g.Version2c
+		snmp.Community = cfg.Community
+		if snmp.Community == "" {
+			snmp.Community = "public" // Default community string
+		}
+		log.Printf("→ Using SNMPv2c with community: %s\n", snmp.Community)
+	} else {
+		// SNMPv3 configuration (default)
+		authProto, err := parseAuthProtocol(cfg.AuthProtocol)
+		if err != nil {
+			return nil, err
+		}
+
+		privProto, err := parsePrivProtocol(cfg.PrivProtocol)
+		if err != nil {
+			return nil, err
+		}
+
+		snmp.Version = g.Version3
+		snmp.SecurityModel = g.UserSecurityModel
+		snmp.MsgFlags = g.AuthPriv
+		snmp.SecurityParameters = &g.UsmSecurityParameters{
 			UserName:                 cfg.User,
 			AuthenticationProtocol:   authProto,
 			AuthenticationPassphrase: cfg.AuthPassword,
 			PrivacyProtocol:          privProto,
 			PrivacyPassphrase:        cfg.PrivPassword,
-		},
+		}
+		log.Printf("→ Using SNMPv3 with user: %s\n", cfg.User)
 	}
 
 	if err := snmp.Connect(); err != nil {
@@ -706,4 +724,19 @@ func (c *Client) DebugWalkSophosOIDs() error {
     
     fmt.Printf("  Found %d OIDs under Sophos tree\n", count)
     return nil
+}
+
+// GetRaw exposes the underlying SNMP Get for use by collectors
+func (c *Client) GetRaw(oids []string) (*g.SnmpPacket, error) {
+	return c.s.Get(oids)
+}
+
+// WalkRaw exposes the underlying SNMP Walk for use by collectors  
+func (c *Client) WalkRaw(oid string, walkFn g.WalkFunc) error {
+	return c.s.Walk(oid, walkFn)
+}
+
+// BulkWalkRaw exposes the underlying SNMP BulkWalk for use by collectors
+func (c *Client) BulkWalkRaw(oid string, walkFn g.WalkFunc) error {
+	return c.s.BulkWalk(oid, walkFn)
 }

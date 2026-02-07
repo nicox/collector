@@ -8,184 +8,218 @@ import (
 	"time"
 
 	"snmp-collector/internal/config"
-    "snmp-collector/internal/collectors/cisco"
-    "snmp-collector/internal/devicetypes"
-	snmpclient "snmp-collector/internal/snmpclient"
+	"snmp-collector/internal/collectors/cisco"
+	"snmp-collector/internal/devicetypes"
 	nbclient "snmp-collector/internal/netbox"
+	snmpclient "snmp-collector/internal/snmpclient"
 )
 
 func main() {
-    configPath := flag.String("config", "config/snmp-collector.yaml", "Path to YAML config file")
-    flag.Parse()
+	configPath := flag.String("config", "config/snmp-collector.yaml", "Path to YAML config file")
+	flag.Parse()
 
-    cfg, err := config.Load(*configPath)
-    if err != nil {
-        log.Fatalf("failed to load config: %v", err)
-    }
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
 
-    log.Printf("Loaded config with %d devices\n", len(cfg.Devices))
+	log.Printf("Loaded config with %d devices\n", len(cfg.Devices))
 
-    // Initialize NetBox client if not dry-run
-    var nb *nbclient.NetBoxClient
-    if !cfg.NetBox.DryRun && cfg.NetBox.URL != "" && cfg.NetBox.Token != "" {
-        nb, err = nbclient.New(cfg.NetBox.URL, cfg.NetBox.Token, cfg.NetBox.Insecure)
-        if err != nil {
-            log.Fatalf("failed to create NetBox client: %v", err)
-        }
-        
-        // Ensure custom fields exist
-        fmt.Println("\n→ Ensuring Sophos custom fields exist in NetBox...")
-        if err := nb.EnsureSophosCustomFields(); err != nil {
-            log.Printf("⚠ Warning: Failed to ensure custom fields: %v\n", err)
-        }
-    }
-    
-    // Scan each device
-    for _, device := range cfg.Devices {
-        log.Printf("\n=== Scanning %s (%s:%d) ===\n", device.Name, device.Target, device.Port)
-
-        snmpCfg := snmpclient.Config{
-            Target:       device.Target,
-            Port:         uint16(device.Port),
-            User:         device.User,
-            AuthProtocol: cfg.SNMP.AuthProto,
-            AuthPassword: cfg.SNMP.AuthPass,
-            PrivProtocol: cfg.SNMP.PrivProto,
-            PrivPassword: cfg.SNMP.PrivPass,
-            Timeout:      time.Duration(cfg.SNMP.Timeout) * time.Second,
-            Retries:      cfg.SNMP.Retries,
-        }
-
-        client, err := snmpclient.New(snmpCfg)
-        if err != nil {
-            log.Printf("❌ SNMP connection failed: %v\n", err)
-            continue
-        }
-        defer client.Close()
-
-        // Get device info
-        deviceInfo, err := client.GetDeviceInfo()
-        if err != nil {
-            log.Printf("❌ Failed to get device info: %v\n", err)
-            continue
-        }
-
-        fmt.Printf("✓ Device: %s\n", deviceInfo.SysName)
-        fmt.Printf("  Model: %s\n", deviceInfo.SysObjectID)
-        fmt.Printf("  Contact: %s\n", deviceInfo.SysContact)
-
-        // Check if this is a Sophos device and get extended info
-        var sophosInfo *snmpclient.SophosFirewallInfo
-        if client.IsSophosDevice() {
-            fmt.Println("\n→ Detected Sophos firewall, collecting extended information...")
-            sophosInfo, err = client.GetSophosFirewallInfo()
-            if err != nil {
-                log.Printf("⚠ Warning: Failed to get Sophos info: %v\n", err)
-            } else {
-                fmt.Printf("✓ Sophos Information:\n")
-                fmt.Printf("  Model: %s\n", sophosInfo.Model)
-                fmt.Printf("  Serial: %s\n", sophosInfo.SerialNumber)
-                fmt.Printf("  Firmware: %s\n", sophosInfo.FirmwareVersion)
-                fmt.Printf("  CPU Usage: %s%%\n", sophosInfo.CPUUsage)
-                fmt.Printf("  Memory Usage: %.1f%%\n", sophosInfo.MemoryUsagePercent)
-                fmt.Printf("  Active Connections: %s\n", sophosInfo.ActiveConnections)
-                if sophosInfo.HAEnabled {
-                    fmt.Printf("  HA: Enabled (%s)\n", sophosInfo.HAMode)
-                }
-                if sophosInfo.LicenseStatus != "" {
-                    fmt.Printf("  License: %s (expires: %s)\n", sophosInfo.LicenseStatus, sophosInfo.LicenseExpiry)
-                }
-            }
-        }
-		if client.IsSophosDevice() {
-    		fmt.Println("\n→ Detected Sophos firewall, collecting extended information...")
-    
-    	// Debug: Walk the OID tree to see what's available
-    	if err := client.DebugWalkSophosOIDs(); err != nil {
-        	log.Printf("⚠ Debug walk failed: %v\n", err)
-    	}
-    
-    	sophosInfo, err = client.GetSophosFirewallInfo()
-    	// ... rest of code
+	// Initialize NetBox client if not dry-run
+	var nb *nbclient.NetBoxClient
+	if !cfg.NetBox.DryRun && cfg.NetBox.URL != "" && cfg.NetBox.Token != "" {
+		nb, err = nbclient.New(cfg.NetBox.URL, cfg.NetBox.Token, cfg.NetBox.Insecure)
+		if err != nil {
+			log.Fatalf("failed to create NetBox client: %v", err)
 		}
 
-        // Get interfaces
-        ifaces, err := client.WalkInterfaces()
-        if err != nil {
-            log.Printf("⚠ Failed to walk interfaces: %v\n", err)
-        } else {
-            fmt.Printf("✓ Interfaces: %d\n", len(ifaces))
-            for _, iface := range ifaces {
-                if iface.Name != "" {
-                    fmt.Printf("  - %s (speed=%s, type=%s)\n", iface.Name, iface.Speed, iface.Type)
-                }
-            }
-        }
+		// Ensure custom fields exist
+		fmt.Println("\n→ Ensuring Sophos custom fields exist in NetBox...")
+		if err := nb.EnsureSophosCustomFields(); err != nil {
+			log.Printf("⚠ Warning: Failed to ensure custom fields: %v\n", err)
+		}
+	}
 
-        // Get ARP
-        arp, err := client.WalkARP()
-        if err != nil {
-            log.Printf("⚠ Failed to walk ARP: %v\n", err)
-        } else {
-            fmt.Printf("✓ ARP entries: %d\n", len(arp))
-            for i, entry := range arp {
-                if i < 3 {
-                    fmt.Printf("  - %s (%s) → %s\n", entry.IPAddr, entry.Hostname, entry.MACAddr)
-                }
-            }
-            if len(arp) > 3 {
-                fmt.Printf("  ... and %d more\n", len(arp)-3)
-            }
-        }
+	// Initialize device type loader
+	dtLoader := devicetypes.NewLoader()
+	fmt.Println("✓ Device type library loader initialized")
 
-        // Get site ID for ARP device creation
-        var siteID float64
-        if nb != nil {
-            sid, err := nb.GetSiteID(cfg.NetBox.Site)
-            if err == nil {
-                siteID = sid
-            }
-        }
+	// Scan each device
+	for _, device := range cfg.Devices {
+		log.Printf("\n=== Scanning %s (%s:%d) ===\n", device.Name, device.Target, device.Port)
 
-        // Push to NetBox if enabled
-        if nb != nil && !cfg.NetBox.DryRun {
-            fmt.Printf("\n→ Pushing to NetBox site=%s\n", cfg.NetBox.Site)
+		snmpCfg := snmpclient.Config{
+			Target:       device.Target,
+			Port:         uint16(device.Port),
+			Version:      device.Version,
+			Community:    device.Community,
+			User:         device.User,
+			AuthProtocol: cfg.SNMP.AuthProto,
+			AuthPassword: cfg.SNMP.AuthPass,
+			PrivProtocol: cfg.SNMP.PrivProto,
+			PrivPassword: cfg.SNMP.PrivPass,
+			Timeout:      time.Duration(cfg.SNMP.Timeout) * time.Second,
+			Retries:      cfg.SNMP.Retries,
+		}
 
-            // Determine device role from sysObjectID
-            deviceRole := "generic"
-            if strings.Contains(deviceInfo.SysObjectID, "2604") {
-                deviceRole = "firewall"
-            } else if strings.Contains(deviceInfo.SysObjectID, "9.9.1") {
-                deviceRole = "switch"
-            }
 
-            deviceID, err := nb.PushDevice(deviceInfo, cfg.NetBox.Site, deviceRole)
-            if err != nil {
-                log.Printf("❌ Failed to push device: %v\n", err)
-                continue
-            }
+		client, err := snmpclient.New(snmpCfg)
+		if err != nil {
+			log.Printf("❌ SNMP connection failed: %v\n", err)
+			continue
+		}
+		defer client.Close()
 
-            // Update with Sophos-specific information if available
-            if sophosInfo != nil {
-                fmt.Println("→ Updating device with Sophos-specific information...")
-                if err := nb.UpdateDeviceWithSophosInfo(deviceID, sophosInfo); err != nil {
-                    log.Printf("⚠ Failed to update Sophos info: %v\n", err)
-                }
-            }
+		// Get device info
+		deviceInfo, err := client.GetDeviceInfo()
+		if err != nil {
+			log.Printf("❌ Failed to get device info: %v\n", err)
+			continue
+		}
 
-            if err := nb.PushInterfaces(deviceID, ifaces); err != nil {
-                log.Printf("⚠ Failed to push interfaces: %v", err)
-            }
-        }
+		fmt.Printf("✓ Device: %s\n", deviceInfo.SysName)
+		fmt.Printf("  OID: %s\n", deviceInfo.SysObjectID)
+		fmt.Printf("  Contact: %s\n", deviceInfo.SysContact)
 
-        // Push ARP devices to NetBox if enabled
-        if nb != nil && !cfg.NetBox.DryRun && len(arp) > 0 {
-            _, err := nb.PushARPEntries(deviceInfo.SysName, siteID, arp)
-            if err != nil {
-                log.Printf("⚠ Failed to push ARP devices: %v\n", err)
-            }
-        }
-    }
+		// Determine manufacturer and device type
+		manufacturer := devicetypes.ExtractManufacturerFromOID(deviceInfo.SysObjectID)
+		var deviceRole string
 
-    log.Println("\n✓ Scan complete")
+		// Check if this is a Sophos device
+		var sophosInfo *snmpclient.SophosFirewallInfo
+		if client.IsSophosDevice() {
+			fmt.Println("\n→ Detected Sophos firewall")
+			sophosInfo, err = client.GetSophosFirewallInfo()
+			if err != nil {
+				log.Printf("⚠ Warning: Failed to get Sophos info: %v\n", err)
+			} else {
+				deviceRole = "firewall"
+
+				fmt.Printf("✓ Sophos Information:\n")
+				fmt.Printf("  Model: %s\n", sophosInfo.Model)
+				fmt.Printf("  Serial: %s\n", sophosInfo.SerialNumber)
+				fmt.Printf("  Firmware: %s\n", sophosInfo.FirmwareVersion)
+				fmt.Printf("  CPU Usage: %s%%\n", sophosInfo.CPUUsage)
+				fmt.Printf("  Memory Usage: %.1f%%\n", sophosInfo.MemoryUsagePercent)
+				fmt.Printf("  Active Connections: %s\n", sophosInfo.ActiveConnections)
+				if sophosInfo.HAEnabled {
+					fmt.Printf("  HA: Enabled (%s)\n", sophosInfo.HAMode)
+				}
+				if sophosInfo.LicenseStatus != "" {
+					fmt.Printf("  License: %s (expires: %s)\n", sophosInfo.LicenseStatus, sophosInfo.LicenseExpiry)
+				}
+			}
+		} else if manufacturer == "Cisco" {
+			// Check if it's an AP
+			apCollector := cisco.NewAPCollector(client)
+			if apCollector.IsCiscoAP(deviceInfo.SysObjectID) {
+				fmt.Println("\n→ Detected Cisco Access Point")
+
+				apInfo, err := apCollector.Discover()
+				if err != nil {
+					log.Printf("❌ Failed to discover AP: %v\n", err)
+				} else {
+					deviceRole = "access-point"
+
+					fmt.Printf("✓ Cisco AP Information:\n")
+					fmt.Printf("  Model: %s\n", apInfo.Model)
+					fmt.Printf("  Serial: %s\n", apInfo.SerialNumber)
+					fmt.Printf("  Firmware: %s\n", apInfo.Firmware)
+
+					// Try to fetch device type from library
+					fmt.Println("\n→ Looking up device type in community library...")
+					normalizedModel := devicetypes.MatchModel(manufacturer, apInfo.Model)
+					dt, err := dtLoader.GetDeviceType(manufacturer, normalizedModel)
+					if err != nil {
+						fmt.Printf("  ⚠ Device type not found in library: %v\n", err)
+						fmt.Printf("  → Will create custom device type\n")
+					} else {
+						fmt.Printf("  ✓ Found device type: %s %s\n", dt.Manufacturer, dt.Model)
+					}
+				}
+			}
+		}
+
+		// Get interfaces
+		ifaces, err := client.WalkInterfaces()
+		if err != nil {
+			log.Printf("⚠ Failed to walk interfaces: %v\n", err)
+		} else {
+			fmt.Printf("✓ Interfaces: %d\n", len(ifaces))
+			for _, iface := range ifaces {
+				if iface.Name != "" {
+					fmt.Printf("  - %s (speed=%s, type=%s)\n", iface.Name, iface.Speed, iface.Type)
+				}
+			}
+		}
+
+		// Get ARP
+		arp, err := client.WalkARP()
+		if err != nil {
+			log.Printf("⚠ Failed to walk ARP: %v\n", err)
+		} else {
+			fmt.Printf("✓ ARP entries: %d\n", len(arp))
+			for i, entry := range arp {
+				if i < 3 {
+					fmt.Printf("  - %s (%s) → %s\n", entry.IPAddr, entry.Hostname, entry.MACAddr)
+				}
+			}
+			if len(arp) > 3 {
+				fmt.Printf("  ... and %d more\n", len(arp)-3)
+			}
+		}
+
+		// Get site ID for ARP device creation
+		var siteID float64
+		if nb != nil {
+			sid, err := nb.GetSiteID(cfg.NetBox.Site)
+			if err == nil {
+				siteID = sid
+			}
+		}
+
+		// Push to NetBox if enabled
+		if nb != nil && !cfg.NetBox.DryRun {
+			fmt.Printf("\n→ Pushing to NetBox site=%s\n", cfg.NetBox.Site)
+
+			// Determine device role if not already set
+			if deviceRole == "" {
+				deviceRole = "generic"
+				if strings.Contains(deviceInfo.SysObjectID, "2604") {
+					deviceRole = "firewall"
+				} else if strings.Contains(deviceInfo.SysObjectID, "9.9.1") {
+					deviceRole = "switch"
+				}
+			}
+
+			deviceID, err := nb.PushDevice(deviceInfo, cfg.NetBox.Site, deviceRole)
+			if err != nil {
+				log.Printf("❌ Failed to push device: %v\n", err)
+				continue
+			}
+
+			// Update with Sophos-specific information if available
+			if sophosInfo != nil {
+				fmt.Println("→ Updating device with Sophos-specific information...")
+				if err := nb.UpdateDeviceWithSophosInfo(deviceID, sophosInfo); err != nil {
+					log.Printf("⚠ Failed to update Sophos info: %v\n", err)
+				}
+			}
+
+			// Push interfaces
+			if err := nb.PushInterfaces(deviceID, ifaces); err != nil {
+				log.Printf("⚠ Failed to push interfaces: %v", err)
+			}
+
+			// Push ARP devices to NetBox if enabled
+			if len(arp) > 0 {
+				_, err := nb.PushARPEntries(deviceInfo.SysName, siteID, arp)
+				if err != nil {
+					log.Printf("⚠ Failed to push ARP devices: %v\n", err)
+				}
+			}
+		}
+	}
+
+	log.Println("\n✓ Scan complete")
 }

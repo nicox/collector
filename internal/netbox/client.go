@@ -38,7 +38,7 @@ func New(url, token string, insecure bool) (*NetBoxClient, error) {
 		client: &http.Client{Transport: transport},
 	}, nil
 }
-
+/*
 // GetOrCreateDeviceRole gets or creates a device role
 func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 	// Try to get existing
@@ -84,6 +84,7 @@ func (n *NetBoxClient) GetOrCreateDeviceRole(roleName string) (float64, error) {
 	fmt.Printf(" ✓ Created role (ID=%d)\n", int(roleID))
 	return roleID, nil
 }
+*/
 
 // GetOrCreateManufacturer gets or creates a manufacturer
 func (n *NetBoxClient) GetOrCreateManufacturer(name string) (float64, error) {
@@ -613,13 +614,6 @@ func (n *NetBoxClient) addIPToInterface(interfaceID float64, ip string) error {
 func (n *NetBoxClient) EnsureSophosCustomFields() error {
     customFields := []map[string]interface{}{
         {
-            "name":         "serial_number",
-            "type":         "text",
-            "object_types": []string{"dcim.device"},  // Changed from content_types
-            "description":  "Device serial number",
-            "group_name":   "Hardware",
-        },
-        {
             "name":         "firmware_version",
             "label":        "Firmware Version",
             "type":         "text",
@@ -838,3 +832,148 @@ func (n *NetBoxClient) UpdateDeviceWithSophosInfo(deviceID float64, sophosInfo *
     return nil
 }
 
+// EnsureManufacturer creates manufacturer if it doesn't exist
+func (n *NetBoxClient) EnsureManufacturer(name string) (float64, error) {
+    slug := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+    
+    // Check if exists
+    resp, _, _ := n.doRequest("GET", fmt.Sprintf("/dcim/manufacturers/?slug=%s", url.QueryEscape(slug)), nil)
+    
+    if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+        if mfg, ok := results[0].(map[string]interface{}); ok {
+            return mfg["id"].(float64), nil
+        }
+    }
+    
+    // Create manufacturer
+    payload := map[string]interface{}{
+        "name": name,
+        "slug": slug,
+    }
+    
+    resp, status, err := n.doRequest("POST", "/dcim/manufacturers/", payload)
+    if err != nil || status >= 400 {
+        return 0, fmt.Errorf("failed to create manufacturer: %w", err)
+    }
+    
+    return resp["id"].(float64), nil
+}
+
+// EnsureDeviceType creates device type if it doesn't exist
+func (n *NetBoxClient) EnsureDeviceType(manufacturerID float64, model, slug string) (float64, error) {
+    // Check if exists
+    resp, _, _ := n.doRequest("GET", fmt.Sprintf("/dcim/device-types/?slug=%s", url.QueryEscape(slug)), nil)
+    
+    if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+        if dt, ok := results[0].(map[string]interface{}); ok {
+            fmt.Printf(" ✓ Device type '%s' already exists\n", model)
+            return dt["id"].(float64), nil
+        }
+    }
+    
+    // Create device type
+    payload := map[string]interface{}{
+        "manufacturer": int(manufacturerID),
+        "model":        model,
+        "slug":         slug,
+    }
+    
+    resp, status, err := n.doRequest("POST", "/dcim/device-types/", payload)
+    if err != nil || status >= 400 {
+        return 0, fmt.Errorf("failed to create device type: %w", err)
+    }
+    
+    fmt.Printf(" ✓ Created device type: %s\n", model)
+    return resp["id"].(float64), nil
+}
+
+// CreateDeviceWithType creates a device with proper device type
+func (n *NetBoxClient) CreateDeviceWithType(name, manufacturer, model, role, site string) (float64, error) {
+    fmt.Printf("→ Creating device '%s' (%s %s)\n", name, manufacturer, model)
+    
+    // Ensure manufacturer exists
+    mfgID, err := n.EnsureManufacturer(manufacturer)
+    if err != nil {
+        return 0, fmt.Errorf("failed to ensure manufacturer: %w", err)
+    }
+    
+    // Generate slug for device type
+    slug := strings.ToLower(strings.ReplaceAll(model, " ", "-"))
+    slug = strings.ReplaceAll(slug, "/", "-")
+    
+    // Ensure device type exists
+    dtID, err := n.EnsureDeviceType(mfgID, model, slug)
+    if err != nil {
+        return 0, fmt.Errorf("failed to ensure device type: %w", err)
+    }
+    
+    // Get site ID
+    siteID, err := n.GetSiteID(site)
+    if err != nil {
+        return 0, fmt.Errorf("failed to get site: %w", err)
+    }
+    
+    // Get device role ID
+    roleID, err := n.GetOrCreateDeviceRole(role)
+    if err != nil {
+        return 0, fmt.Errorf("failed to get device role: %w", err)
+    }
+    
+    // Check if device already exists
+    resp, _, _ := n.doRequest("GET", fmt.Sprintf("/dcim/devices/?name=%s", url.QueryEscape(name)), nil)
+    
+    if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+        if device, ok := results[0].(map[string]interface{}); ok {
+            fmt.Printf(" ✓ Device '%s' already exists (ID=%.0f)\n", name, device["id"].(float64))
+            return device["id"].(float64), nil
+        }
+    }
+    
+    // Create device
+    payload := map[string]interface{}{
+        "name":        name,
+        "device_type": int(dtID),
+        "role":        int(roleID),
+        "site":        int(siteID),
+        "status":      "active",
+    }
+    
+    resp, status, err := n.doRequest("POST", "/dcim/devices/", payload)
+    if err != nil || status >= 400 {
+        return 0, fmt.Errorf("failed to create device: %w", err)
+    }
+    
+    deviceID := resp["id"].(float64)
+    fmt.Printf(" ✓ Created device '%s' (ID=%.0f)\n", name, deviceID)
+    
+    return deviceID, nil
+}
+
+// GetOrCreateDeviceRole ensures device role exists
+func (n *NetBoxClient) GetOrCreateDeviceRole(name string) (float64, error) {
+    slug := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+    
+    // Check if exists
+    resp, _, _ := n.doRequest("GET", fmt.Sprintf("/dcim/device-roles/?slug=%s", url.QueryEscape(slug)), nil)
+    
+    if results, ok := resp["results"].([]interface{}); ok && len(results) > 0 {
+        if role, ok := results[0].(map[string]interface{}); ok {
+            return role["id"].(float64), nil
+        }
+    }
+    
+    // Create role
+    payload := map[string]interface{}{
+        "name":        name,
+        "slug":        slug,
+        "color":       "9e9e9e",
+        "vm_role":     false,
+    }
+    
+    resp, status, err := n.doRequest("POST", "/dcim/device-roles/", payload)
+    if err != nil || status >= 400 {
+        return 0, fmt.Errorf("failed to create device role: %w", err)
+    }
+    
+    return resp["id"].(float64), nil
+}
