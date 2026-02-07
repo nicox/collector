@@ -87,7 +87,7 @@ func main() {
 
 		// Check if this is a Sophos device
 		var sophosInfo *snmpclient.SophosFirewallInfo
-		if client.IsSophosDevice() {
+		if client.IsSophosDevice(deviceInfo.SysObjectID) {
 			fmt.Println("\n→ Detected Sophos firewall")
 			sophosInfo, err = client.GetSophosFirewallInfo()
 			if err != nil {

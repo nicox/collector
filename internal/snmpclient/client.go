@@ -8,7 +8,7 @@ import (
 	"net"
 	"context"
 	"log"
-	//"sync"
+	"sync"
 
 	g "github.com/gosnmp/gosnmp"
 )
@@ -263,18 +263,17 @@ func (c *Client) Close() {
 	}
 }
 
-// reverseLookup performs reverse DNS lookup
-// reverseLookupWithTimeout performs reverse DNS lookup with 1s timeout
+// reverseLookupWithTimeout performs reverse DNS lookup with 100ms timeout
 func reverseLookupWithTimeout(ip string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	resolver := &net.Resolver{}
-	names, err := resolver.LookupAddr(ctx, ip)
-	if err != nil || len(names) == 0 {
-		return ""
-	}
-	return strings.TrimSuffix(names[0], ".")
+    ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+    defer cancel()
+    
+    resolver := &net.Resolver{}
+    names, err := resolver.LookupAddr(ctx, ip)
+    if err != nil || len(names) == 0 {
+        return ""
+    }
+    return strings.TrimSuffix(names[0], ".")
 }
 
 
@@ -481,68 +480,88 @@ func (c *Client) WalkLLDP() ([]LLDPNeighbor, error) {
 	return neighbors, nil
 }
 
-// WalkARP walks ARP table
+// WalkARP walks ARP table with parallel DNS lookups
 func (c *Client) WalkARP() ([]ARPEntry, error) {
-	var entries []ARPEntry
-
-	err := c.s.BulkWalk(oidIpNetToMediaTable, func(pdu g.SnmpPDU) error {
-		// OID format: .1.3.6.1.2.1.3.1.1.X.ifIndex.IP.octet1.octet2.octet3.octet4
-		// X = 1:ifIndex, 2:physAddr, 3:netAddr, 4:type
-
-		parts := strings.Split(pdu.Name, ".")
-		if len(parts) < 13 {
-			return nil
-		}
-
-		// Column indicator (parts[10] should be 1, 2, 3, or 4)
-		col := parts[10]
-
-		// Only process physAddr column (2)
-		if col != "2" {
-			return nil
-		}
-
-		// Convert MAC from bytes to hex string
-		var mac string
-		switch v := pdu.Value.(type) {
-		case []byte:
-			if len(v) == 0 {
-				return nil
-			}
-			macParts := make([]string, len(v))
-			for i, b := range v {
-				macParts[i] = fmt.Sprintf("%02x", b)
-			}
-			mac = strings.Join(macParts, ":")
-		default:
-			return nil
-		}
-
-		if mac == "" || mac == "00:00:00:00:00:00" {
-			return nil
-		}
-
-		// Extract IP from OID suffix (last 4 parts)
-		ipOctets := parts[len(parts)-4:]
-		ip := fmt.Sprintf("%s.%s.%s.%s", ipOctets[0], ipOctets[1], ipOctets[2], ipOctets[3])
-
-		// Reverse DNS lookup
-		hostname := reverseLookupWithTimeout(ip)
-
-		entries = append(entries, ARPEntry{
-			IPAddr:   ip,
-			MACAddr:  mac,
-			Hostname: hostname,
-		})
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
+    type arpTemp struct {
+        ip  string
+        mac string
+    }
+    
+    var tempEntries []arpTemp
+    
+    // First, collect all ARP entries without DNS lookups
+    err := c.s.BulkWalk(oidIpNetToMediaTable, func(pdu g.SnmpPDU) error {
+        // OID format: .1.3.6.1.2.1.3.1.1.X.ifIndex.IP.octet1.octet2.octet3.octet4
+        // X = 1:ifIndex, 2:physAddr, 3:netAddr, 4:type
+        parts := strings.Split(pdu.Name, ".")
+        if len(parts) < 13 {
+            return nil
+        }
+        
+        // Column indicator (parts[10] should be 1, 2, 3, or 4)
+        col := parts[10]
+        
+        // Only process physAddr column (2)
+        if col != "2" {
+            return nil
+        }
+        
+        // Convert MAC from bytes to hex string
+        var mac string
+        switch v := pdu.Value.(type) {
+        case []byte:
+            if len(v) == 0 {
+                return nil
+            }
+            macParts := make([]string, len(v))
+            for i, b := range v {
+                macParts[i] = fmt.Sprintf("%02x", b)
+            }
+            mac = strings.Join(macParts, ":")
+        default:
+            return nil
+        }
+        
+        if mac == "" || mac == "00:00:00:00:00:00" {
+            return nil
+        }
+        
+        // Extract IP from OID suffix (last 4 parts)
+        ipOctets := parts[len(parts)-4:]
+        ip := fmt.Sprintf("%s.%s.%s.%s", ipOctets[0], ipOctets[1], ipOctets[2], ipOctets[3])
+        
+        tempEntries = append(tempEntries, arpTemp{ip: ip, mac: mac})
+        return nil
+    })
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    // Now perform parallel DNS lookups with semaphore to limit concurrency
+    entries := make([]ARPEntry, len(tempEntries))
+    var wg sync.WaitGroup
+    semaphore := make(chan struct{}, 100) // Limit to 100 concurrent DNS requests
+    
+    for i, temp := range tempEntries {
+        wg.Add(1)
+        go func(idx int, ip, mac string) {
+            defer wg.Done()
+            semaphore <- struct{}{}        // Acquire semaphore
+            hostname := reverseLookupWithTimeout(ip)
+            <-semaphore                    // Release semaphore
+            
+            entries[idx] = ARPEntry{
+                IPAddr:   ip,
+                MACAddr:  mac,
+                Hostname: hostname,
+            }
+        }(i, temp.ip, temp.mac)
+    }
+    
+    wg.Wait()
+    return entries, nil
 }
-
 
 // WalkMacTable walks MAC forwarding table (BRIDGE-MIB)
 func (c *Client) WalkMacTable() ([]MacEntry, error) {
@@ -695,15 +714,12 @@ func (c *Client) GetSophosFirewallInfo() (*SophosFirewallInfo, error) {
 }
 
 
-// IsSophosDevice checks if the device is a Sophos firewall
-func (c *Client) IsSophosDevice() bool {
-    pkt, err := c.s.Get([]string{oidSophosModel})
-    if err != nil || len(pkt.Variables) == 0 {
-        return false
-    }
-    model := toString(pkt.Variables[0].Value)
-    return model != ""
+// IsSophosDevice checks if the device is a Sophos firewall based on sysObjectID
+func (c *Client) IsSophosDevice(sysObjectID string) bool {
+	// Sophos enterprise OID: .1.3.6.1.4.1.2604
+	return strings.Contains(sysObjectID, ".1.3.6.1.4.1.2604")
 }
+
 
 // DebugWalkSophosOIDs walks the Sophos OID tree to discover available OIDs
 func (c *Client) DebugWalkSophosOIDs() error {
