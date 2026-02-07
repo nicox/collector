@@ -1,0 +1,56 @@
+# NetBox Configuration
+netbox:
+  url: "https://192.168.1.25/api"
+  token: "41049b978a6d7cf727077cf37b38dfa76a4b5f74"
+  site: "Home"
+  dry_run: false
+  insecure: true  # Set to true for self-signed certificates
+
+# SNMP Configuration
+snmp:
+  auth_proto: "SHA256"      # SHA or MD5
+  auth_pass: "snmpuserreply"
+  priv_proto: "AES"      # AES or DES
+  priv_pass: "snmpuserreply"
+  timeout: 5             # seconds
+  retries: 1
+
+# Manual Device List (legacy mode)
+devices:
+  - name: "firewall-01"
+    target: "192.168.1.1"
+    port: 161
+    version: "3"
+    user: "snmp3"
+
+  - name: "cisco-ap-01"
+    target: "192.168.1.22"
+    port: 161
+    user: "public"
+    version: "2c"
+    community: "public"
+
+# Automatic Network Discovery (optional - disabled by default)
+discovery:
+  enabled: false
+  interval: 1h           # How often to scan networks
+  networks:
+    - "192.168.1.0/24"
+  concurrent: 10         # Number of concurrent scans
+
+
+
+# Custom Fields Management
+custom_fields:
+  auto_create: true      # Automatically create custom fields if missing
+
+# Logging Configuration
+logging:
+  level: "debug"          # debug, info, warn, error
+  format: "text"         # text or json
+
+# Device type library settings
+devicetypes:
+  enabled: true
+  cache_duration: "24h"
+  fallback_to_custom: true

@@ -1,0 +1,20 @@
+snmp:
+  auth_proto: SHA256          # MD5, SHA, SHA256, SHA384, SHA512
+  auth_pass: "snmpuserreply"
+  priv_proto: AES          # DES, AES
+  priv_pass: "snmpuserreply"
+  timeout: 5               # seconds
+  retries: 1
+
+netbox:
+  url: "https://192.168.1.25/api"
+  token: "41049b978a6d7cf727077cf37b38dfa76a4b5f74"
+  site: "Home"
+  dry_run: false           # set to false to actually push to NetBox
+  insecure: true
+
+devices:
+  - name: "fw.nicox.org"
+    target: "192.168.1.1"
+    port: 161
+    user: "snmp3"
